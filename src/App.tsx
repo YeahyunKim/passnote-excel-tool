@@ -57,8 +57,8 @@ function getPageCount(row: Row, columns: string[]): number | null {
 function buildOptionCells(kwons: number) {
   const price = 1500 * kwons;
   return {
-    옵션명: '책 스캔 서비스 신청 (무료 체험)\n제본/분철',
-    옵션값: `스캔 신청(O),신청 안함(X)\n제본/분철 안함,스프링 제본 (${kwons}권)`,
+    옵션명: '구매 도서 스캔 서비스 이용 신청\n제본/분철',
+    옵션값: `스캔 서비스 신청(O),신청 안함(X)\n제본/분철 안함,스프링 제본 (${kwons}권)`,
     옵션가: `0,0\n0,${price}`,
     '옵션 재고수량': '999,999',
   };
