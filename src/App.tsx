@@ -121,6 +121,7 @@ function applyCommonFilters(params: {
 
 export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
 
   // 1) 비교 영역
   const [compareA, setCompareA] = useState<File | null>(null);
@@ -194,7 +195,7 @@ export default function App() {
   /** 비교 시 A 분철1 비었을 때 권수 산정: B 페이지수 / 이 값 (0~1000, 기본 300) */
   const [pagesPerBook, setPagesPerBook] = useState(300);
   /** 비교 시 쪽수(페이지 수)가 비어 있는 B 행 제외 여부 */
-  const [excludeEmptyPageCount, setExcludeEmptyPageCount] = useState(false);
+  const [excludeEmptyPageCount, setExcludeEmptyPageCount] = useState(true);
 
   // 3) 취합 영역
   const [aggregateRows, setAggregateRows] = useState<Row[]>([]);
@@ -391,8 +392,25 @@ export default function App() {
   return (
     <div className="app">
       <header className="top">
-        <h1 className="topTitle">PassNote Excel Tool</h1>
-        <p className="topSub">브라우저에서만 동작 · 파일은 외부로 전송되지 않습니다.</p>
+        <div className="topBar">
+          <div className="topLeft">
+            <h1 className="topTitle">PassNote Excel Tool</h1>
+            <p className="topSub">브라우저에서만 동작 · 파일은 외부로 전송되지 않습니다.</p>
+          </div>
+          <button
+            className="infoIconBtn"
+            type="button"
+            aria-label="안내"
+            onClick={() => setIsInfoOpen(true)}
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+              <path
+                fill="currentColor"
+                d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 4.7a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5ZM10.9 11a1 1 0 0 1 1-1h.2a1 1 0 0 1 1 1v6a1 1 0 0 1-2 0v-5Z"
+              />
+            </svg>
+          </button>
+        </div>
       </header>
 
       {errorMessage ? (
@@ -655,6 +673,27 @@ export default function App() {
       <footer className="footer">
         <p className="footerText">ISBN · 상품명 · 출판날짜/출간일 컬럼 사용</p>
       </footer>
+
+      {isInfoOpen ? (
+        <div className="modalOverlay" role="presentation" onClick={() => setIsInfoOpen(false)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="안내"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button className="modalClose" type="button" aria-label="닫기" onClick={() => setIsInfoOpen(false)}>
+              ×
+            </button>
+            <div className="modalTitle">안내</div>
+            <div className="modalBody">
+              <p>소호, 프로그램이나 크롤링이 잘못됐을 때,</p>
+              <p>꼭 연락해주세요. 빨리 고치고 도와드리겠습니다.</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
