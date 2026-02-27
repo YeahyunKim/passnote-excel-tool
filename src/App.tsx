@@ -12,7 +12,9 @@ import {
   type Row,
 } from './lib/excel';
 
-const YEAR_OPTIONS = Array.from({ length: 11 }, (_, i) => 2016 + i).reverse();
+const YEAR_MIN = 2000;
+const YEAR_MAX = 2030;
+const YEAR_OPTIONS = Array.from({ length: YEAR_MAX - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).reverse();
 const AUTO_NO_BASE = '순번';
 
 type DataPack = { rows: Row[]; columns: string[]; label: string };
@@ -43,14 +45,35 @@ function parseBuncheolKwons(value: unknown): number | null {
   return m ? Math.max(1, parseInt(m[1], 10)) : null;
 }
 
-/** B 행에서 페이지 수 컬럼 값 숫자로 (페이지 수 / 페이지수 등) */
+/** B 행에서 페이지 수/쪽수 컬럼 값 숫자로 (페이지 수 / 페이지수 / 쪽수 등) */
 function getPageCount(row: Row, columns: string[]): number | null {
-  const pageCol = columns.find((c) => c === '페이지 수' || c === '페이지수');
+  const pageCol = columns.find((c) => c === '페이지 수' || c === '페이지수' || c === '쪽수');
   if (!pageCol) return null;
   const v = row[pageCol];
   if (v == null) return null;
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  let n: number;
+
+  if (typeof v === 'number') {
+    n = v;
+  } else {
+    const s = String(v).trim();
+    if (!s) return null; // 엑셀에서 빈 셀(defval: '')은 여기서 걸러야 함
+
+    // "1,234", "300쪽", "약 200" 같은 값도 최대한 숫자로 해석
+    const normalized = s.replace(/,/g, '');
+    const direct = Number(normalized);
+    if (Number.isFinite(direct)) {
+      n = direct;
+    } else {
+      const m = normalized.match(/\d+/);
+      if (!m) return null;
+      n = Number(m[0]);
+    }
+  }
+
+  if (!Number.isFinite(n)) return null;
+  const pages = Math.floor(n);
+  return pages > 0 ? pages : null;
 }
 
 /** 권수 N으로 옵션 컬럼 값 생성 (엔터 포함) */
@@ -72,11 +95,15 @@ function applyCommonFilters(params: {
   columns: string[];
   excludeReservation: boolean;
   selectedYears: Set<number>;
+  excludeEmptyPageCount?: boolean;
 }) {
   const hasProductName = params.columns.includes('상품명');
   const dateCol = params.columns.find((c) => DATE_COLUMN_CANDIDATES.includes(c));
 
   let out = params.rows;
+  if (params.excludeEmptyPageCount) {
+    out = out.filter((r) => getPageCount(r, params.columns) != null);
+  }
   if (params.excludeReservation && hasProductName) {
     out = out.filter((r) => !hasSubstring(r['상품명'], '예약판매'));
   }
@@ -156,9 +183,18 @@ export default function App() {
 
   // 공통 옵션(1/2에 적용)
   const [excludeReservation, setExcludeReservation] = useState(true);
-  const [selectedYears, setSelectedYears] = useState<Set<number>>(() => new Set(YEAR_OPTIONS));
+  const [yearStart, setYearStart] = useState(YEAR_MIN);
+  const [yearEnd, setYearEnd] = useState(YEAR_MAX);
+  const selectedYears = useMemo(() => {
+    if (yearStart > yearEnd) return new Set<number>();
+    const set = new Set<number>();
+    for (let y = yearStart; y <= yearEnd; y++) set.add(y);
+    return set;
+  }, [yearStart, yearEnd]);
   /** 비교 시 A 분철1 비었을 때 권수 산정: B 페이지수 / 이 값 (0~1000, 기본 300) */
   const [pagesPerBook, setPagesPerBook] = useState(300);
+  /** 비교 시 쪽수(페이지 수)가 비어 있는 B 행 제외 여부 */
+  const [excludeEmptyPageCount, setExcludeEmptyPageCount] = useState(false);
 
   // 3) 취합 영역
   const [aggregateRows, setAggregateRows] = useState<Row[]>([]);
@@ -171,12 +207,10 @@ export default function App() {
   const aggregateNoLabel = useMemo(() => getAutoNoLabel(aggregateColumns), [aggregateColumns]);
 
   const selectedYearText = useMemo(() => {
-    const years = Array.from(selectedYears).sort((a, b) => b - a);
-    if (years.length === 0) return '선택 없음';
-    if (years.length === YEAR_OPTIONS.length) return '전체';
-    if (years.length <= 4) return years.join(', ');
-    return `${years[0]} ~ ${years[years.length - 1]} 외 ${years.length - 2}개`;
-  }, [selectedYears]);
+    if (selectedYears.size === 0) return '선택 없음';
+    if (yearStart === YEAR_MIN && yearEnd === YEAR_MAX) return '2000 ~ 2030 전체';
+    return `${yearStart} ~ ${yearEnd}`;
+  }, [selectedYears.size, yearStart, yearEnd]);
 
   async function runCompare() {
     if (!compareA || !compareB) return;
@@ -218,6 +252,7 @@ export default function App() {
         columns: b.columns,
         excludeReservation,
         selectedYears,
+        excludeEmptyPageCount,
       });
 
       setComparePack({
@@ -240,17 +275,27 @@ export default function App() {
 
     try {
       const src = await readSheetByIndex(filterFile, filterSelectedIndex);
-      const out = applyCommonFilters({
+      const filtered = applyCommonFilters({
         rows: src.rows,
         columns: src.columns,
         excludeReservation,
         selectedYears,
+        excludeEmptyPageCount,
+      });
+
+      const perBook = Math.max(1, Math.min(1000, pagesPerBook));
+      const rowsWithOptions: Row[] = filtered.map((row) => {
+        const pages = getPageCount(row, src.columns);
+        const kwons =
+          pages != null && perBook > 0 ? Math.max(1, Math.ceil(pages / perBook)) : 1;
+        const cells = buildOptionCells(kwons);
+        return { ...row, ...cells };
       });
 
       setFilterPack({
-        rows: out,
-        columns: defaultColumnsFrom(out, src.columns),
-        label: `필터 결과 · ${out.length.toLocaleString()}건`,
+        rows: rowsWithOptions,
+        columns: defaultColumnsFrom(rowsWithOptions, src.columns),
+        label: `필터 결과 · ${rowsWithOptions.length.toLocaleString()}건`,
       });
     } catch (e) {
       setErrorMessage(e instanceof Error ? e.message : '필터링 중 오류가 발생했습니다.');
@@ -501,6 +546,17 @@ export default function App() {
               </span>
               <span className="switchText">예약판매 행 제외</span>
             </label>
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={excludeEmptyPageCount}
+                onChange={(e) => setExcludeEmptyPageCount(e.target.checked)}
+              />
+              <span className="switchTrack" aria-hidden="true">
+                <span className="switchThumb" />
+              </span>
+              <span className="switchText">쪽수 비어 있는 행 제외</span>
+            </label>
             <div className="pagesPerBookBlock">
               <div className="pagesPerBookHead">
                 <span className="yearLabel">페이지/권</span>
@@ -521,33 +577,39 @@ export default function App() {
                 <span className="yearLabel">연도</span>
                 <span className="yearMeta">{selectedYearText}</span>
                 <div className="yearQuick">
-                  <button className="btn btn--secondary btn--sm" type="button" onClick={() => setSelectedYears(new Set(YEAR_OPTIONS))}>
+                  <button className="btn btn--secondary btn--sm" type="button" onClick={() => { setYearStart(YEAR_MIN); setYearEnd(YEAR_MAX); }}>
                     전체
                   </button>
-                  <button className="btn btn--secondary btn--sm" type="button" onClick={() => setSelectedYears(new Set())}>
+                  <button className="btn btn--secondary btn--sm" type="button" onClick={() => { setYearStart(YEAR_MAX); setYearEnd(YEAR_MIN); }}>
                     해제
                   </button>
                 </div>
               </div>
-              <div className="yearChips" role="group" aria-label="출판연도 선택">
-                {YEAR_OPTIONS.map((y) => (
-                  <button
-                    key={y}
-                    type="button"
-                    className={['chip', selectedYears.has(y) ? 'chip--active' : ''].filter(Boolean).join(' ')}
-                    onClick={() => {
-                      setSelectedYears((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(y)) next.delete(y);
-                        else next.add(y);
-                        return next;
-                      });
-                    }}
-                  >
-                    {y}
-                  </button>
-                ))}
+              <div className="yearRangeTrack" role="group" aria-label="출판연도 범위 (2000~2030)">
+                <span className="yearRangeEdge">{YEAR_MIN}</span>
+                <div className="yearRangeSliders">
+                  <input
+                    type="range"
+                    min={YEAR_MIN}
+                    max={YEAR_MAX}
+                    value={yearStart}
+                    onChange={(e) => setYearStart(Math.min(Number(e.target.value), yearEnd))}
+                    className="yearRangeInput yearRangeInput--left"
+                    aria-label="시작 연도 (왼쪽 드래그)"
+                  />
+                  <input
+                    type="range"
+                    min={YEAR_MIN}
+                    max={YEAR_MAX}
+                    value={yearEnd}
+                    onChange={(e) => setYearEnd(Math.max(Number(e.target.value), yearStart))}
+                    className="yearRangeInput yearRangeInput--right"
+                    aria-label="끝 연도 (오른쪽 드래그)"
+                  />
+                </div>
+                <span className="yearRangeEdge">{YEAR_MAX}</span>
               </div>
+              <p className="yearRangeHint">왼쪽: 시작 연도 · 오른쪽: 끝 연도 (드래그로 조절)</p>
             </div>
             <p className="optHint">옵션 변경 후 실행 버튼을 다시 누르세요.</p>
           </section>

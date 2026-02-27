@@ -54,7 +54,12 @@ export async function readSheetNames(file: File): Promise<string[]> {
 /** 지정한 인덱스(0부터)의 시트만 읽습니다. */
 export async function readSheetByIndex(file: File, sheetIndex: number): Promise<SheetData> {
   const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array', cellDates: true, dense: true });
+  const wb = XLSX.read(buf, {
+    type: 'array',
+    cellDates: true,
+    dense: true,
+    nodim: true, // 파일이 보고한 범위 무시, 실제 셀 기준으로 전체 행 읽기 (200행 등으로 잘리는 현상 방지)
+  });
   const names = wb.SheetNames || [];
   const sheetName = names[sheetIndex] ?? names[0] ?? 'Sheet1';
   const ws = wb.Sheets[sheetName];
