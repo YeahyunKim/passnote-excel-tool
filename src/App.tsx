@@ -21,6 +21,8 @@ type DataPack = { rows: Row[]; columns: string[]; label: string };
 type DedupeMode = 'none' | 'isbn_keep_first' | 'isbn_keep_last';
 type PageMode = 'inspect' | 'db_upload';
 
+type DataPackWithSheet = DataPack & { sheetName?: string };
+
 function hasSubstring(value: unknown, needle: string): boolean {
   const s = String(value ?? '');
   return s.includes(needle);
@@ -155,14 +157,14 @@ export default function App() {
   const [compareASelectedIndex, setCompareASelectedIndex] = useState(0);
   const [compareBSelectedIndex, setCompareBSelectedIndex] = useState(0);
   const [compareBusy, setCompareBusy] = useState(false);
-  const [comparePack, setComparePack] = useState<DataPack | null>(null);
+  const [comparePack, setComparePack] = useState<DataPackWithSheet | null>(null);
 
   // 2) 필터 영역
   const [filterFile, setFilterFile] = useState<File | null>(null);
   const [filterSheetNames, setFilterSheetNames] = useState<string[]>([]);
   const [filterSelectedIndex, setFilterSelectedIndex] = useState(0);
   const [filterBusy, setFilterBusy] = useState(false);
-  const [filterPack, setFilterPack] = useState<DataPack | null>(null);
+  const [filterPack, setFilterPack] = useState<DataPackWithSheet | null>(null);
 
   function handleCompareAChange(file: File | null) {
     setCompareA(file);
@@ -266,6 +268,7 @@ export default function App() {
   const [dbBSelectedIndex, setDbBSelectedIndex] = useState(0);
   const [dbBusy, setDbBusy] = useState(false);
   const [dbPack, setDbPack] = useState<DataPack | null>(null);
+  const [dbAggregateRows, setDbAggregateRows] = useState<Row[]>([]);
 
   const canCompare = !!compareA && !!compareB && !compareBusy;
   const canFilter = !!filterFile && !filterBusy;
@@ -325,6 +328,7 @@ export default function App() {
         rows: filtered,
         columns: defaultColumnsFrom(filtered, b.columns),
         label: `B 전체 · 옵션 반영 · ${filtered.length.toLocaleString()}건`,
+        sheetName: b.sheetName,
       });
     } catch (e) {
       setErrorMessage(e instanceof Error ? e.message : '비교 중 오류가 발생했습니다.');
@@ -362,6 +366,7 @@ export default function App() {
         rows: rowsWithOptions,
         columns: defaultColumnsFrom(rowsWithOptions, src.columns),
         label: `필터 결과 · ${rowsWithOptions.length.toLocaleString()}건`,
+        sheetName: src.sheetName,
       });
     } catch (e) {
       setErrorMessage(e instanceof Error ? e.message : '필터링 중 오류가 발생했습니다.');
@@ -370,12 +375,18 @@ export default function App() {
     }
   }
 
-  function addToAggregate(pack: DataPack) {
+  function addToAggregate(pack: DataPackWithSheet) {
     setErrorMessage(null);
-    setAggregateColumns((prev) => unionColumns(prev, pack.columns));
+    const hasSheet = !!pack.sheetName;
+    const nextPackColumns = hasSheet ? unionColumns(pack.columns, ['카테고리코드']) : pack.columns;
+    setAggregateColumns((prev) => unionColumns(prev, nextPackColumns));
 
     setAggregateRows((prev) => {
-      if (dedupeMode === 'none') return [...prev, ...pack.rows];
+      const rowsToAdd = hasSheet
+        ? pack.rows.map((r) => ({ ...r, 카테고리코드: pack.sheetName }))
+        : pack.rows;
+
+      if (dedupeMode === 'none') return [...prev, ...rowsToAdd];
 
       const indexByIsbn = new Map<string, number>();
       prev.forEach((r, i) => {
@@ -384,7 +395,7 @@ export default function App() {
       });
 
       const next = [...prev];
-      for (const r of pack.rows) {
+      for (const r of rowsToAdd) {
         const k = normalizeIsbn(r['ISBN']);
         if (!k) {
           next.push(r);
@@ -572,6 +583,24 @@ export default function App() {
       rows: dbPack.rows,
       columns: DB_EXPORT_COLUMNS,
       filename: 'DB업로드.xlsx',
+      sheetName: 'DBUpload',
+    });
+  }
+
+  function addDbToAggregate(pack: DataPack) {
+    setDbAggregateRows((prev) => [...prev, ...pack.rows]);
+  }
+
+  function resetDbAggregate() {
+    setDbAggregateRows([]);
+  }
+
+  function downloadDbAggregateXlsx() {
+    if (dbAggregateRows.length === 0) return;
+    downloadRowsAsXlsx({
+      rows: dbAggregateRows,
+      columns: DB_EXPORT_COLUMNS,
+      filename: 'DB업로드_취합.xlsx',
       sheetName: 'DBUpload',
     });
   }
@@ -964,6 +993,14 @@ export default function App() {
 
             <div className="stepResult">
               <span className="stepResultLabel">{dbPack ? dbPack.label : '결과'}</span>
+              <button
+                className="btn btn--secondary"
+                type="button"
+                onClick={() => dbPack && addDbToAggregate(dbPack)}
+                disabled={!dbPack || dbPack.rows.length === 0}
+              >
+                취합에 추가
+              </button>
             </div>
 
             <VirtualTable
@@ -973,6 +1010,37 @@ export default function App() {
               rowNumberHeader="순번"
               height={520}
               emptyText="A/B 파일 올린 뒤 생성"
+            />
+          </section>
+
+          <section className="step step--dbAgg">
+            <div className="stepHead stepHead--bar">
+              <span className="stepTitle">다운로드</span>
+              <span className="stepCount">{dbAggregateRows.length.toLocaleString()}건</span>
+              <button
+                className="btn btn--secondary"
+                type="button"
+                onClick={resetDbAggregate}
+                disabled={dbAggregateRows.length === 0}
+              >
+                초기화
+              </button>
+              <button
+                className="btn btn--primary"
+                type="button"
+                onClick={downloadDbAggregateXlsx}
+                disabled={dbAggregateRows.length === 0}
+              >
+                저장
+              </button>
+            </div>
+            <VirtualTable
+              rows={dbAggregateRows}
+              columns={DB_EXPORT_COLUMNS}
+              showRowNumbers
+              rowNumberHeader="순번"
+              height={420}
+              emptyText="취합된 데이터 없음"
             />
           </section>
         </>

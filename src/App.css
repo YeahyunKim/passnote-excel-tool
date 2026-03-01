@@ -243,6 +243,11 @@
   border-left: 4px solid #0ea5e9;
 }
 
+.step--dbAgg {
+  margin-top: 18px;
+  border-left: 4px solid #38bdf8;
+}
+
 .step--opt .switch {
   margin-top: 14px;
   margin-bottom: 18px;
