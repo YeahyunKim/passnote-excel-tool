@@ -19,6 +19,7 @@ const AUTO_NO_BASE = '순번';
 
 type DataPack = { rows: Row[]; columns: string[]; label: string };
 type DedupeMode = 'none' | 'isbn_keep_first' | 'isbn_keep_last';
+type PageMode = 'inspect' | 'db_upload';
 
 function hasSubstring(value: unknown, needle: string): boolean {
   const s = String(value ?? '');
@@ -34,6 +35,28 @@ function defaultColumnsFrom(rows: Row[], fallback: string[] = []) {
 
 function getAutoNoLabel(columns: string[]) {
   return columns.includes(AUTO_NO_BASE) ? `${AUTO_NO_BASE}(자동)` : AUTO_NO_BASE;
+}
+
+function normalizeProductCode(value: unknown): string {
+  if (value == null) return '';
+  return String(value).trim();
+}
+
+function pickColumn(columns: string[], candidates: string[]): string | null {
+  for (const c of candidates) {
+    if (columns.includes(c)) return c;
+  }
+  return null;
+}
+
+function formatDateYmd(value: unknown): string {
+  if (value == null) return '';
+  if (value instanceof Date) {
+    const t = value.getTime();
+    if (Number.isNaN(t)) return '';
+    return value.toISOString().slice(0, 10);
+  }
+  return String(value).trim();
 }
 
 /** A 엑셀 "분철 1" 값에서 권수 추출. e.g. "스프링(3권)" → 3, 없으면 null */
@@ -122,6 +145,7 @@ function applyCommonFilters(params: {
 export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [pageMode, setPageMode] = useState<PageMode>('inspect');
 
   // 1) 비교 영역
   const [compareA, setCompareA] = useState<File | null>(null);
@@ -182,6 +206,36 @@ export default function App() {
     }
   }
 
+  function handleDbAChange(file: File | null) {
+    setDbAFile(file);
+    setDbPack(null);
+    setDbErrorMessage(null);
+    if (file) {
+      readSheetNames(file).then((names) => {
+        setDbASheetNames(names);
+        setDbASelectedIndex(0);
+      });
+    } else {
+      setDbASheetNames([]);
+      setDbASelectedIndex(0);
+    }
+  }
+
+  function handleDbBChange(file: File | null) {
+    setDbBFile(file);
+    setDbPack(null);
+    setDbErrorMessage(null);
+    if (file) {
+      readSheetNames(file).then((names) => {
+        setDbBSheetNames(names);
+        setDbBSelectedIndex(0);
+      });
+    } else {
+      setDbBSheetNames([]);
+      setDbBSelectedIndex(0);
+    }
+  }
+
   // 공통 옵션(1/2에 적용)
   const [excludeReservation, setExcludeReservation] = useState(true);
   const [yearStart, setYearStart] = useState(YEAR_MIN);
@@ -201,6 +255,17 @@ export default function App() {
   const [aggregateRows, setAggregateRows] = useState<Row[]>([]);
   const [aggregateColumns, setAggregateColumns] = useState<string[]>([]);
   const [dedupeMode, setDedupeMode] = useState<DedupeMode>('isbn_keep_first');
+
+  // 4) DB 업로드 엑셀
+  const [dbErrorMessage, setDbErrorMessage] = useState<string | null>(null);
+  const [dbAFile, setDbAFile] = useState<File | null>(null);
+  const [dbBFile, setDbBFile] = useState<File | null>(null);
+  const [dbASheetNames, setDbASheetNames] = useState<string[]>([]);
+  const [dbBSheetNames, setDbBSheetNames] = useState<string[]>([]);
+  const [dbASelectedIndex, setDbASelectedIndex] = useState(0);
+  const [dbBSelectedIndex, setDbBSelectedIndex] = useState(0);
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbPack, setDbPack] = useState<DataPack | null>(null);
 
   const canCompare = !!compareA && !!compareB && !compareBusy;
   const canFilter = !!filterFile && !filterBusy;
@@ -342,8 +407,9 @@ export default function App() {
   }
 
   const EXPORT_CHUNK_SIZE = 500;
+  const EXPORT_FULL_CHUNK_SIZE = 5000;
 
-  function downloadAggregate() {
+  function downloadAggregateSingle() {
     if (aggregateRows.length === 0) return;
     const noLabel = getAutoNoLabel(aggregateColumns);
     const exportColumns =
@@ -351,23 +417,37 @@ export default function App() {
         ? [noLabel, ...aggregateColumns]
         : [noLabel, '판매자 상품코드', ...aggregateColumns];
 
-    if (aggregateRows.length <= EXPORT_CHUNK_SIZE) {
-      const rowsForExport = aggregateRows.map((r, i) => ({
-        [noLabel]: i + 1,
+    const totalChunks = Math.max(1, Math.ceil(aggregateRows.length / EXPORT_FULL_CHUNK_SIZE));
+    for (let c = 0; c < totalChunks; c++) {
+      const start = c * EXPORT_FULL_CHUNK_SIZE;
+      const end = Math.min(start + EXPORT_FULL_CHUNK_SIZE, aggregateRows.length);
+      const chunkRows = aggregateRows.slice(start, end);
+      const rowsForExport = chunkRows.map((r, i) => ({
+        [noLabel]: start + i + 1,
         ...r,
-        '판매자 상품코드': 100001 + i,
+        '판매자 상품코드': 100001 + start + i,
       }));
-      const today = new Date().toISOString().slice(0, 10);
-      downloadRowsAsXlsx({
-        rows: rowsForExport,
-        columns: exportColumns,
-        filename: `passnote_aggregate_${today}.xlsx`,
-        sheetName: 'Aggregate',
-      });
-      return;
+      const chunkNum = String(c + 1).padStart(2, '0');
+      setTimeout(() => {
+        downloadRowsAsXlsx({
+          rows: rowsForExport,
+          columns: exportColumns,
+          filename: `전체취합_${chunkNum}.xlsx`,
+          sheetName: 'Aggregate',
+        });
+      }, c * 350);
     }
+  }
 
-    const totalChunks = Math.ceil(aggregateRows.length / EXPORT_CHUNK_SIZE);
+  function downloadAggregateChunked() {
+    if (aggregateRows.length === 0) return;
+    const noLabel = getAutoNoLabel(aggregateColumns);
+    const exportColumns =
+      aggregateColumns.includes('판매자 상품코드')
+        ? [noLabel, ...aggregateColumns]
+        : [noLabel, '판매자 상품코드', ...aggregateColumns];
+
+    const totalChunks = Math.max(1, Math.ceil(aggregateRows.length / EXPORT_CHUNK_SIZE));
     for (let c = 0; c < totalChunks; c++) {
       const start = c * EXPORT_CHUNK_SIZE;
       const end = Math.min(start + EXPORT_CHUNK_SIZE, aggregateRows.length);
@@ -375,7 +455,7 @@ export default function App() {
       const rowsForExport = chunkRows.map((r, i) => ({
         [noLabel]: start + i + 1,
         ...r,
-        '판매자 상품코드': start + i + 1,
+        '판매자 상품코드': 100001 + start + i,
       }));
       const chunkNum = String(c + 1).padStart(2, '0');
       setTimeout(() => {
@@ -387,6 +467,113 @@ export default function App() {
         });
       }, c * 350);
     }
+  }
+
+  const DB_EXPORT_COLUMNS = [
+    'product_id',
+    'product_code',
+    'price',
+    'discount_rate',
+    'is_discount_applied',
+    'pages',
+    'title',
+    'author',
+    'description',
+    'isbn',
+    'publisher',
+    'file_key',
+    'thumbnail_image_url',
+    'publication_date',
+  ];
+
+  async function runDbUploadBuild() {
+    if (!dbAFile || !dbBFile) return;
+    setDbErrorMessage(null);
+    setDbBusy(true);
+    setDbPack(null);
+
+    try {
+      const [a, b] = await Promise.all([readSheetByIndex(dbAFile, dbASelectedIndex), readSheetByIndex(dbBFile, dbBSelectedIndex)]);
+
+      const aProductIdCol = pickColumn(a.columns, ['상품번호(스마트스토어)', '상품번호']);
+      const aProductCodeCol = pickColumn(a.columns, ['판매자상품코드', '판매자 상품코드', '판매자상품 코드']);
+      const aPriceCol = pickColumn(a.columns, ['판매가']);
+      const aDiscountCol = pickColumn(a.columns, ['판매자할인', '할인율', '할인율(%)']);
+      const aTitleCol = pickColumn(a.columns, ['상품명']);
+      const aThumbCol = pickColumn(a.columns, ['대표이미지 URL', '대표이미지URL']);
+      const aIsbnCol = pickColumn(a.columns, ['ISBN', 'ISBN13', '판매자바코드']);
+
+      const bProductCodeCol = pickColumn(b.columns, ['판매자 상품코드', '판매자상품코드']);
+      const bAuthorCol = pickColumn(b.columns, ['글작가', '저자', '저자명']);
+      const bDescCol = pickColumn(b.columns, ['상세설명', '상세 설명', '상품상세', '상세']);
+      const bIsbnCol = pickColumn(b.columns, ['ISBN', 'ISBN13']);
+      const bPublisherCol = pickColumn(b.columns, ['출판사', '출판사명']);
+      const bPubDateCol = pickColumn(b.columns, ['출간일', '출판날짜', '출판일']);
+
+      if (!aProductCodeCol) throw new Error('A 엑셀에서 판매자상품코드 컬럼을 찾지 못했습니다.');
+      if (!bProductCodeCol) throw new Error('B 엑셀에서 판매자 상품코드 컬럼을 찾지 못했습니다.');
+      if (!aProductIdCol) throw new Error('A 엑셀에서 상품번호(스마트스토어) 컬럼을 찾지 못했습니다.');
+
+      const bByCode = new Map<string, Row>();
+      for (const r of b.rows) {
+        const code = normalizeProductCode(r[bProductCodeCol]);
+        if (!code) continue;
+        bByCode.set(code, r);
+      }
+
+      const outRows: Row[] = [];
+      let matched = 0;
+      let missingB = 0;
+
+      for (const ar of a.rows) {
+        const code = normalizeProductCode(ar[aProductCodeCol]);
+        if (!code) continue;
+        const br = bByCode.get(code);
+        if (br) matched++;
+        else missingB++;
+
+        const pages = br ? getPageCount(br, b.columns) : null;
+        const isbnFromA = aIsbnCol ? normalizeIsbn(ar[aIsbnCol]) : '';
+        const isbnFromB = bIsbnCol ? normalizeIsbn(br?.[bIsbnCol]) : '';
+
+        outRows.push({
+          product_id: ar[aProductIdCol] ?? '',
+          product_code: code,
+          price: aPriceCol ? ar[aPriceCol] ?? '' : '',
+          discount_rate: aDiscountCol ? ar[aDiscountCol] ?? '' : '',
+          is_discount_applied: true,
+          pages: pages ?? '',
+          title: aTitleCol ? ar[aTitleCol] ?? '' : '',
+          author: bAuthorCol ? br?.[bAuthorCol] ?? '' : '',
+          description: bDescCol ? br?.[bDescCol] ?? '' : '',
+          isbn: isbnFromA || isbnFromB || '',
+          publisher: bPublisherCol ? br?.[bPublisherCol] ?? '' : '',
+          file_key: '',
+          thumbnail_image_url: aThumbCol ? ar[aThumbCol] ?? '' : '',
+          publication_date: bPubDateCol ? formatDateYmd(br?.[bPubDateCol]) : '',
+        });
+      }
+
+      setDbPack({
+        rows: outRows,
+        columns: DB_EXPORT_COLUMNS,
+        label: `생성 결과 · ${outRows.length.toLocaleString()}건 (매칭 ${matched.toLocaleString()} · B없음 ${missingB.toLocaleString()})`,
+      });
+    } catch (e) {
+      setDbErrorMessage(e instanceof Error ? e.message : '생성 중 오류가 발생했습니다.');
+    } finally {
+      setDbBusy(false);
+    }
+  }
+
+  function downloadDbUploadXlsx() {
+    if (!dbPack || dbPack.rows.length === 0) return;
+    downloadRowsAsXlsx({
+      rows: dbPack.rows,
+      columns: DB_EXPORT_COLUMNS,
+      filename: 'DB업로드.xlsx',
+      sheetName: 'DBUpload',
+    });
   }
 
   return (
@@ -411,16 +598,38 @@ export default function App() {
             </svg>
           </button>
         </div>
+        <div className="pageTabs" role="tablist" aria-label="페이지 선택">
+          <button
+            className={['tabBtn', pageMode === 'inspect' ? 'tabBtn--active' : ''].filter(Boolean).join(' ')}
+            type="button"
+            role="tab"
+            aria-selected={pageMode === 'inspect'}
+            onClick={() => setPageMode('inspect')}
+          >
+            엑셀 검수
+          </button>
+          <button
+            className={['tabBtn', pageMode === 'db_upload' ? 'tabBtn--active' : ''].filter(Boolean).join(' ')}
+            type="button"
+            role="tab"
+            aria-selected={pageMode === 'db_upload'}
+            onClick={() => setPageMode('db_upload')}
+          >
+            DB업로드 엑셀
+          </button>
+        </div>
       </header>
 
-      {errorMessage ? (
+      {pageMode === 'inspect' && errorMessage ? (
         <div className="alert alert--error" role="alert">
           <div className="alertTitle">처리 실패</div>
           <div className="alertBody">{errorMessage}</div>
         </div>
       ) : null}
 
-      <div className="layout">
+      {pageMode === 'inspect' ? (
+        <>
+          <div className="layout">
         <div className="layoutLeft">
           <section className="step step--1">
             <div className="stepHead">
@@ -656,8 +865,11 @@ export default function App() {
           >
             초기화
           </button>
-          <button className="btn btn--primary" type="button" onClick={downloadAggregate} disabled={totalAggregate === 0}>
-            저장 (XLSX)
+          <button className="btn btn--primary" type="button" onClick={downloadAggregateSingle} disabled={totalAggregate === 0}>
+            전체 저장
+          </button>
+          <button className="btn btn--secondary" type="button" onClick={downloadAggregateChunked} disabled={totalAggregate === 0}>
+            분할 저장
           </button>
         </div>
         <VirtualTable
@@ -669,6 +881,102 @@ export default function App() {
           emptyText="취합된 데이터 없음"
         />
       </section>
+        </>
+      ) : (
+        <>
+          {dbErrorMessage ? (
+            <div className="alert alert--error" role="alert">
+              <div className="alertTitle">처리 실패</div>
+              <div className="alertBody">{dbErrorMessage}</div>
+            </div>
+          ) : null}
+
+          <section className="step step--db">
+            <div className="stepHead">
+              <span className="stepTitle">DB 업로드 엑셀 생성</span>
+              <button
+                className="btn btn--primary"
+                type="button"
+                onClick={runDbUploadBuild}
+                disabled={!dbAFile || !dbBFile || dbBusy}
+              >
+                {dbBusy ? '처리 중…' : '생성'}
+              </button>
+              <button
+                className="btn btn--secondary"
+                type="button"
+                onClick={downloadDbUploadXlsx}
+                disabled={!dbPack || dbPack.rows.length === 0}
+              >
+                다운로드
+              </button>
+            </div>
+
+            <div className="twoCol">
+              <div className="fieldGroup">
+                <FileDrop label="A (스마트스토어 다운로드)" value={dbAFile} onChange={handleDbAChange} disabled={dbBusy} />
+                {dbASheetNames.length > 0 && (
+                  <div className="sheetSelect">
+                    <label className="sheetSelectLabel" htmlFor="sheet-db-a">시트</label>
+                    <select
+                      id="sheet-db-a"
+                      className="select sheetSelectInput"
+                      value={dbASelectedIndex}
+                      onChange={(e) => {
+                        setDbASelectedIndex(Number(e.target.value));
+                        setDbPack(null);
+                      }}
+                      disabled={dbBusy}
+                      aria-label="A 엑셀 시트 선택"
+                    >
+                      {dbASheetNames.map((name, i) => (
+                        <option key={i} value={i}>{name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div className="fieldGroup">
+                <FileDrop label="B (취합 엑셀)" value={dbBFile} onChange={handleDbBChange} disabled={dbBusy} />
+                {dbBSheetNames.length > 0 && (
+                  <div className="sheetSelect">
+                    <label className="sheetSelectLabel" htmlFor="sheet-db-b">시트</label>
+                    <select
+                      id="sheet-db-b"
+                      className="select sheetSelectInput"
+                      value={dbBSelectedIndex}
+                      onChange={(e) => {
+                        setDbBSelectedIndex(Number(e.target.value));
+                        setDbPack(null);
+                      }}
+                      disabled={dbBusy}
+                      aria-label="B 엑셀 시트 선택"
+                    >
+                      {dbBSheetNames.map((name, i) => (
+                        <option key={i} value={i}>{name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="stepResult">
+              <span className="stepResultLabel">{dbPack ? dbPack.label : '결과'}</span>
+            </div>
+
+            <VirtualTable
+              rows={dbPack?.rows ?? []}
+              columns={dbPack?.columns ?? DB_EXPORT_COLUMNS}
+              showRowNumbers
+              rowNumberHeader="순번"
+              height={520}
+              emptyText="A/B 파일 올린 뒤 생성"
+            />
+          </section>
+        </>
+      )}
 
       <footer className="footer">
         <p className="footerText">ISBN · 상품명 · 출판날짜/출간일 컬럼 사용</p>

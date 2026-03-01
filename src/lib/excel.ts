@@ -54,12 +54,15 @@ export async function readSheetNames(file: File): Promise<string[]> {
 /** 지정한 인덱스(0부터)의 시트만 읽습니다. */
 export async function readSheetByIndex(file: File, sheetIndex: number): Promise<SheetData> {
   const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, {
+  const wb = XLSX.read(
+    buf,
+    ({
     type: 'array',
     cellDates: true,
     dense: true,
     nodim: true, // 파일이 보고한 범위 무시, 실제 셀 기준으로 전체 행 읽기 (200행 등으로 잘리는 현상 방지)
-  });
+    } as XLSX.ParsingOptions & { nodim?: boolean }),
+  );
   const names = wb.SheetNames || [];
   const sheetName = names[sheetIndex] ?? names[0] ?? 'Sheet1';
   const ws = wb.Sheets[sheetName];
@@ -138,6 +141,22 @@ export function downloadRowsAsXlsx(params: { rows: Row[]; columns?: string[]; fi
   const ws = XLSX.utils.json_to_sheet(rows, columns ? { header: columns } : undefined);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, params.filename, { compression: true });
+}
+
+export function downloadSheetsAsXlsx(params: {
+  filename: string;
+  sheets: Array<{ rows: Row[]; columns?: string[]; sheetName: string }>;
+}) {
+  const wb = XLSX.utils.book_new();
+
+  for (const s of params.sheets) {
+    const columns = s.columns && s.columns.length > 0 ? s.columns : undefined;
+    const rows = sanitizeRowsForExcel(s.rows);
+    const ws = XLSX.utils.json_to_sheet(rows, columns ? { header: columns } : undefined);
+    XLSX.utils.book_append_sheet(wb, ws, s.sheetName || 'Sheet');
+  }
+
   XLSX.writeFile(wb, params.filename, { compression: true });
 }
 
