@@ -14,7 +14,6 @@ import {
 
 const YEAR_MIN = 2000;
 const YEAR_MAX = 2030;
-const YEAR_OPTIONS = Array.from({ length: YEAR_MAX - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).reverse();
 const AUTO_NO_BASE = '순번';
 
 type DataPack = { rows: Row[]; columns: string[]; label: string };
@@ -59,6 +58,23 @@ function formatDateYmd(value: unknown): string {
     return value.toISOString().slice(0, 10);
   }
   return String(value).trim();
+}
+
+function normalizeDiscountRate(value: unknown): number | '' {
+  if (value == null) return '';
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // 스마트스토어 엑셀에서 0.1 = 10% 형태로 내려오는 케이스 보정
+    if (value > 0 && value <= 1) return Math.round(value * 100);
+    return value;
+  }
+  const s = String(value).trim();
+  if (!s) return '';
+  const normalized = s.replace(/,/g, '');
+  const pct = normalized.endsWith('%') ? normalized.slice(0, -1).trim() : normalized;
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return '';
+  if (n > 0 && n <= 1) return Math.round(n * 100);
+  return n;
 }
 
 /** A 엑셀 "분철 1" 값에서 권수 추출. e.g. "스프링(3권)" → 3, 없으면 null */
@@ -382,9 +398,9 @@ export default function App() {
     setAggregateColumns((prev) => unionColumns(prev, nextPackColumns));
 
     setAggregateRows((prev) => {
-      const rowsToAdd = hasSheet
-        ? pack.rows.map((r) => ({ ...r, 카테고리코드: pack.sheetName }))
-        : pack.rows;
+      const rowsToAdd: Row[] = hasSheet
+        ? pack.rows.map((r) => ({ ...(r as Row), 카테고리코드: pack.sheetName! } as Row))
+        : (pack.rows as Row[]);
 
       if (dedupeMode === 'none') return [...prev, ...rowsToAdd];
 
@@ -551,7 +567,7 @@ export default function App() {
           product_id: ar[aProductIdCol] ?? '',
           product_code: code,
           price: aPriceCol ? ar[aPriceCol] ?? '' : '',
-          discount_rate: aDiscountCol ? ar[aDiscountCol] ?? '' : '',
+          discount_rate: aDiscountCol ? normalizeDiscountRate(ar[aDiscountCol]) : '',
           is_discount_applied: true,
           pages: pages ?? '',
           title: aTitleCol ? ar[aTitleCol] ?? '' : '',
@@ -562,6 +578,7 @@ export default function App() {
           file_key: '',
           thumbnail_image_url: aThumbCol ? ar[aThumbCol] ?? '' : '',
           publication_date: bPubDateCol ? formatDateYmd(br?.[bPubDateCol]) : '',
+          __matched: !!br,
         });
       }
 
@@ -588,7 +605,12 @@ export default function App() {
   }
 
   function addDbToAggregate(pack: DataPack) {
-    setDbAggregateRows((prev) => [...prev, ...pack.rows]);
+    const matchedRows = pack.rows.filter((r) => Boolean((r as Row)['__matched']));
+    const normalized = matchedRows.map((r) => ({
+      ...r,
+      discount_rate: normalizeDiscountRate((r as Row)['discount_rate']),
+    }));
+    setDbAggregateRows((prev) => [...prev, ...normalized]);
   }
 
   function resetDbAggregate() {
@@ -597,12 +619,22 @@ export default function App() {
 
   function downloadDbAggregateXlsx() {
     if (dbAggregateRows.length === 0) return;
-    downloadRowsAsXlsx({
-      rows: dbAggregateRows,
-      columns: DB_EXPORT_COLUMNS,
-      filename: 'DB업로드_취합.xlsx',
-      sheetName: 'DBUpload',
-    });
+    const DB_EXPORT_CHUNK_SIZE = 3000;
+    const totalChunks = Math.max(1, Math.ceil(dbAggregateRows.length / DB_EXPORT_CHUNK_SIZE));
+    for (let c = 0; c < totalChunks; c++) {
+      const start = c * DB_EXPORT_CHUNK_SIZE;
+      const end = Math.min(start + DB_EXPORT_CHUNK_SIZE, dbAggregateRows.length);
+      const chunkRows = dbAggregateRows.slice(start, end);
+      const chunkNum = String(c + 1).padStart(2, '0');
+      setTimeout(() => {
+        downloadRowsAsXlsx({
+          rows: chunkRows,
+          columns: DB_EXPORT_COLUMNS,
+          filename: `DB업로드_취합_${chunkNum}.xlsx`,
+          sheetName: 'DBUpload',
+        });
+      }, c * 350);
+    }
   }
 
   return (
