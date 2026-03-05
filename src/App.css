@@ -127,6 +127,181 @@
   position: relative;
 }
 
+.modal--wide {
+  width: min(980px, 100%);
+}
+
+.dedupeIntro {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: rgba(17, 24, 39, 0.85);
+  line-height: 1.55;
+  padding-bottom: 20px;
+}
+
+.dedupeGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+@media (min-width: 900px) {
+  .dedupeGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.dedupePanel {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 1px 0 rgba(15, 23, 42, 0.03);
+  min-width: 0;
+}
+
+.dedupePanelTitle {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  font-size: 12px;
+  font-weight: 900;
+  color: rgba(17, 24, 39, 0.88);
+}
+
+.dedupePanelBody {
+  padding: 10px 12px;
+  max-height: min(56vh, 520px);
+  overflow: auto;
+}
+
+.dedupeGroup + .dedupeGroup {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(15, 23, 42, 0.12);
+}
+
+.dedupeGroupHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.dedupeGroupIsbn {
+  font-size: 12px;
+  font-weight: 900;
+  color: rgba(17, 24, 39, 0.9);
+}
+
+.dedupeGroupMeta {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(17, 24, 39, 0.55);
+  white-space: nowrap;
+}
+
+.dedupeList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dedupeItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 12px;
+  padding: 10px 10px;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.dedupeItem--selected {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.dedupeItemText {
+  min-width: 0;
+  flex: 1;
+}
+
+.dedupeItemTitle {
+  font-size: 13px;
+  font-weight: 800;
+  color: rgba(17, 24, 39, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dedupeItemMeta {
+  margin-top: 3px;
+  font-size: 11px;
+  color: rgba(17, 24, 39, 0.62);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dedupeItemMetaLine {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dedupeHint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(17, 24, 39, 0.55);
+}
+
+.dedupeMoveBtn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.95);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 900;
+  color: rgba(17, 24, 39, 0.7);
+}
+
+.dedupeMoveBtn:hover {
+  background: #fff;
+  color: rgba(17, 24, 39, 0.9);
+}
+
+.dedupeMoveBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.dedupeMoveBtn:disabled:hover {
+  background: rgba(255, 255, 255, 0.95);
+  color: rgba(17, 24, 39, 0.7);
+}
+
+.dedupeMoveBtn--back {
+  border-color: rgba(59, 130, 246, 0.25);
+  color: rgba(37, 99, 235, 0.85);
+}
+
+.dedupeEmpty {
+  font-size: 12px;
+  color: rgba(17, 24, 39, 0.55);
+  padding: 8px 2px;
+}
+
+.dedupeActions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .modalClose {
   position: absolute;
   top: 10px;

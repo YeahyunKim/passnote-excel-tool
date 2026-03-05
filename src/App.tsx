@@ -21,6 +21,7 @@ type DedupeMode = 'none' | 'isbn_keep_first' | 'isbn_keep_last';
 type PageMode = 'inspect' | 'db_upload';
 
 type DataPackWithSheet = DataPack & { sheetName?: string };
+type IsbnDuplicateGroup = { isbn: string; rows: Row[] };
 
 function hasSubstring(value: unknown, needle: string): boolean {
   const s = String(value ?? '');
@@ -285,6 +286,9 @@ export default function App() {
   const [dbBusy, setDbBusy] = useState(false);
   const [dbPack, setDbPack] = useState<DataPack | null>(null);
   const [dbAggregateRows, setDbAggregateRows] = useState<Row[]>([]);
+  const [isDbDedupeOpen, setIsDbDedupeOpen] = useState(false);
+  const [dbDupGroups, setDbDupGroups] = useState<IsbnDuplicateGroup[]>([]);
+  const [dbChosenByIsbn, setDbChosenByIsbn] = useState<Record<string, Row>>({});
 
   const canCompare = !!compareA && !!compareB && !compareBusy;
   const canFilter = !!filterFile && !filterBusy;
@@ -502,6 +506,7 @@ export default function App() {
     'price',
     'discount_rate',
     'is_discount_applied',
+    'status',
     'pages',
     'title',
     'author',
@@ -511,6 +516,7 @@ export default function App() {
     'file_key',
     'thumbnail_image_url',
     'publication_date',
+    'smartstore_book_category_id',
   ];
 
   async function runDbUploadBuild() {
@@ -526,9 +532,11 @@ export default function App() {
       const aProductCodeCol = pickColumn(a.columns, ['판매자상품코드', '판매자 상품코드', '판매자상품 코드']);
       const aPriceCol = pickColumn(a.columns, ['판매가']);
       const aDiscountCol = pickColumn(a.columns, ['판매자할인', '할인율', '할인율(%)']);
+      const aStatusCol = pickColumn(a.columns, ['판매상태', '판매 상태']);
       const aTitleCol = pickColumn(a.columns, ['상품명']);
       const aThumbCol = pickColumn(a.columns, ['대표이미지 URL', '대표이미지URL']);
       const aIsbnCol = pickColumn(a.columns, ['ISBN', 'ISBN13', '판매자바코드']);
+      const aSubCategoryCol = pickColumn(a.columns, ['소분류', '카테고리(소분류)', '카테고리 소분류']);
 
       const bProductCodeCol = pickColumn(b.columns, ['판매자 상품코드', '판매자상품코드']);
       const bAuthorCol = pickColumn(b.columns, ['글작가', '저자', '저자명']);
@@ -569,6 +577,7 @@ export default function App() {
           price: aPriceCol ? ar[aPriceCol] ?? '' : '',
           discount_rate: aDiscountCol ? normalizeDiscountRate(ar[aDiscountCol]) : '',
           is_discount_applied: true,
+          status: aStatusCol ? ar[aStatusCol] ?? '' : '',
           pages: pages ?? '',
           title: aTitleCol ? ar[aTitleCol] ?? '' : '',
           author: bAuthorCol ? br?.[bAuthorCol] ?? '' : '',
@@ -578,6 +587,7 @@ export default function App() {
           file_key: '',
           thumbnail_image_url: aThumbCol ? ar[aThumbCol] ?? '' : '',
           publication_date: bPubDateCol ? formatDateYmd(br?.[bPubDateCol]) : '',
+          smartstore_book_category_id: aSubCategoryCol ? ar[aSubCategoryCol] ?? '' : '',
           __matched: !!br,
         });
       }
@@ -617,14 +627,40 @@ export default function App() {
     setDbAggregateRows([]);
   }
 
-  function downloadDbAggregateXlsx() {
-    if (dbAggregateRows.length === 0) return;
+  function getDbIsbnKey(row: Row): string {
+    // DB업로드 탭에서는 보통 `isbn`(snake_case)로 들어오지만, 방어적으로 `ISBN`도 허용
+    return normalizeIsbn((row as Row)['isbn'] ?? (row as Row)['ISBN']);
+  }
+
+  function getDbRowKey(row: Row): string {
+    const isbn = getDbIsbnKey(row);
+    const pid = String((row as Row)['product_id'] ?? '');
+    const pcode = String((row as Row)['product_code'] ?? '');
+    const title = String((row as Row)['title'] ?? '');
+    return `${isbn}__${pid}__${pcode}__${title}`;
+  }
+
+  function getDbRowTitle(row: Row): string {
+    const t = String((row as Row)['title'] ?? '').trim();
+    return t || '(제목 없음)';
+  }
+
+  function getDbRowMeta(row: Row): { productId: string; productCode: string; status: string } {
+    return {
+      productId: String((row as Row)['product_id'] ?? '').trim(),
+      productCode: String((row as Row)['product_code'] ?? '').trim(),
+      status: String((row as Row)['status'] ?? '').trim(),
+    };
+  }
+
+  function downloadDbAggregateXlsx(rows: Row[] = dbAggregateRows) {
+    if (rows.length === 0) return;
     const DB_EXPORT_CHUNK_SIZE = 3000;
-    const totalChunks = Math.max(1, Math.ceil(dbAggregateRows.length / DB_EXPORT_CHUNK_SIZE));
+    const totalChunks = Math.max(1, Math.ceil(rows.length / DB_EXPORT_CHUNK_SIZE));
     for (let c = 0; c < totalChunks; c++) {
       const start = c * DB_EXPORT_CHUNK_SIZE;
-      const end = Math.min(start + DB_EXPORT_CHUNK_SIZE, dbAggregateRows.length);
-      const chunkRows = dbAggregateRows.slice(start, end);
+      const end = Math.min(start + DB_EXPORT_CHUNK_SIZE, rows.length);
+      const chunkRows = rows.slice(start, end);
       const chunkNum = String(c + 1).padStart(2, '0');
       setTimeout(() => {
         downloadRowsAsXlsx({
@@ -635,6 +671,82 @@ export default function App() {
         });
       }, c * 350);
     }
+  }
+
+  function openDbIsbnDedupeIfNeeded() {
+    if (dbAggregateRows.length === 0) return;
+
+    const byIsbn = new Map<string, Row[]>();
+    for (const r of dbAggregateRows) {
+      const isbn = getDbIsbnKey(r);
+      if (!isbn) continue;
+      const arr = byIsbn.get(isbn);
+      if (arr) arr.push(r);
+      else byIsbn.set(isbn, [r]);
+    }
+
+    const dupGroups: IsbnDuplicateGroup[] = [];
+    for (const [isbn, rows] of byIsbn.entries()) {
+      if (rows.length > 1) dupGroups.push({ isbn, rows });
+    }
+
+    if (dupGroups.length === 0) {
+      downloadDbAggregateXlsx(dbAggregateRows);
+      return;
+    }
+
+    dupGroups.sort((a, b) => a.isbn.localeCompare(b.isbn));
+    setDbDupGroups(dupGroups);
+    setDbChosenByIsbn({});
+    setIsDbDedupeOpen(true);
+  }
+
+  function chooseDbRow(isbn: string, row: Row) {
+    setDbChosenByIsbn((prev) => ({ ...prev, [isbn]: row }));
+  }
+
+  function unchooseDbRow(isbn: string) {
+    setDbChosenByIsbn((prev) => {
+      const next = { ...prev };
+      delete next[isbn];
+      return next;
+    });
+  }
+
+  function confirmDbDedupeAndSave() {
+    if (dbDupGroups.length === 0) return;
+    const chosenIsbns = new Set(Object.keys(dbChosenByIsbn));
+    const requiredIsbns = new Set(dbDupGroups.map((g) => g.isbn));
+    for (const isbn of requiredIsbns) {
+      if (!chosenIsbns.has(isbn)) return;
+    }
+
+    const chosenByIsbn = new Map<string, Row>();
+    for (const g of dbDupGroups) {
+      const chosen = dbChosenByIsbn[g.isbn];
+      if (chosen) chosenByIsbn.set(g.isbn, chosen);
+    }
+
+    const dupIsbnSet = new Set(dbDupGroups.map((g) => g.isbn));
+    const seen = new Set<string>();
+    const out: Row[] = [];
+    for (const r of dbAggregateRows) {
+      const isbn = getDbIsbnKey(r);
+      if (!isbn || !dupIsbnSet.has(isbn)) {
+        out.push(r);
+        continue;
+      }
+      if (seen.has(isbn)) continue;
+      const chosen = chosenByIsbn.get(isbn);
+      if (chosen) out.push(chosen);
+      seen.add(isbn);
+    }
+
+    setDbAggregateRows(out);
+    setIsDbDedupeOpen(false);
+    setDbDupGroups([]);
+    setDbChosenByIsbn({});
+    downloadDbAggregateXlsx(out);
   }
 
   return (
@@ -1060,7 +1172,7 @@ export default function App() {
               <button
                 className="btn btn--primary"
                 type="button"
-                onClick={downloadDbAggregateXlsx}
+                onClick={openDbIsbnDedupeIfNeeded}
                 disabled={dbAggregateRows.length === 0}
               >
                 저장
@@ -1081,6 +1193,140 @@ export default function App() {
       <footer className="footer">
         <p className="footerText">ISBN · 상품명 · 출판날짜/출간일 컬럼 사용</p>
       </footer>
+
+      {isDbDedupeOpen ? (
+        <div className="modalOverlay" role="presentation" onClick={() => setIsDbDedupeOpen(false)}>
+          <div
+            className="modal modal--wide"
+            role="dialog"
+            aria-modal="true"
+            aria-label="ISBN 중복 선택"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button className="modalClose" type="button" aria-label="닫기" onClick={() => setIsDbDedupeOpen(false)}>
+              ×
+            </button>
+            <div className="modalTitle">ISBN 동일 상품 선택</div>
+            <div className="modalBody">
+              <p className="dedupeIntro">
+                동일한 <b>ISBN</b>을 가진 상품이 있습니다. 각 ISBN 그룹에서 <b>저장할 상품 1개</b>를 선택하세요.
+                (중복 없는 상품은 자동으로 저장 대상입니다.)
+              </p>
+
+              <div className="dedupeGrid">
+                <div className="dedupePanel">
+                  <div className="dedupePanelTitle">ISBN 동일 상품</div>
+                  <div className="dedupePanelBody">
+                    {dbDupGroups.map((g) => {
+                      const selected = dbChosenByIsbn[g.isbn];
+                      const selectedKey = selected ? getDbRowKey(selected) : null;
+                      const candidates = g.rows.filter((r) => getDbRowKey(r) !== selectedKey);
+                      const isLocked = !!selected;
+                      return (
+                        <div key={g.isbn} className="dedupeGroup">
+                          <div className="dedupeGroupHead">
+                            <div className="dedupeGroupIsbn">ISBN {g.isbn}</div>
+                            <div className="dedupeGroupMeta">{g.rows.length}개 중 1개 선택</div>
+                          </div>
+                          <div className="dedupeList">
+                            {candidates.map((r) => {
+                              const key = getDbRowKey(r);
+                              const { productId, productCode, status } = getDbRowMeta(r);
+                              return (
+                                <div key={key} className="dedupeItem">
+                                  <div className="dedupeItemText">
+                                    <div className="dedupeItemTitle" title={getDbRowTitle(r)}>
+                                      {getDbRowTitle(r)}
+                                    </div>
+                                    <div className="dedupeItemMeta">
+                                      <div className="dedupeItemMetaLine">· 스마트스토어 상품 번호: {productId || '-'}</div>
+                                      <div className="dedupeItemMetaLine">· 판매자 상품 번호: {productCode || '-'}</div>
+                                      {status ? <div className="dedupeItemMetaLine">· 판매상태: {status}</div> : null}
+                                    </div>
+                                  </div>
+                                  <button
+                                    className="dedupeMoveBtn"
+                                    type="button"
+                                    onClick={() => chooseDbRow(g.isbn, r)}
+                                    aria-label="저장할 상품으로 이동"
+                                    disabled={isLocked}
+                                    title={isLocked ? '이미 선택된 상품이 있습니다. 오른쪽에서 ←로 되돌린 뒤 선택하세요.' : '저장할 상품으로 이동'}
+                                  >
+                                    →
+                                  </button>
+                                </div>
+                              );
+                            })}
+                            {candidates.length === 0 ? <div className="dedupeEmpty">선택할 항목 없음</div> : null}
+                            {isLocked ? <div className="dedupeHint">오른쪽에 이미 선택됨 · ←로 되돌린 뒤 다른 상품을 선택하세요.</div> : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="dedupePanel">
+                  <div className="dedupePanelTitle">저장할 상품</div>
+                  <div className="dedupePanelBody">
+                    {dbDupGroups.map((g) => {
+                      const selected = dbChosenByIsbn[g.isbn];
+                      return (
+                        <div key={g.isbn} className="dedupeGroup">
+                          <div className="dedupeGroupHead">
+                            <div className="dedupeGroupIsbn">ISBN {g.isbn}</div>
+                            <div className="dedupeGroupMeta">{selected ? '선택됨' : '선택 필요'}</div>
+                          </div>
+                          {selected ? (
+                            <div className="dedupeItem dedupeItem--selected">
+                              <div className="dedupeItemText">
+                                <div className="dedupeItemTitle" title={getDbRowTitle(selected)}>
+                                  {getDbRowTitle(selected)}
+                                </div>
+                                <div className="dedupeItemMeta">
+                                  {(() => {
+                                    const { productId, productCode, status } = getDbRowMeta(selected);
+                                    return (
+                                      <>
+                                        <div className="dedupeItemMetaLine">· 스마트스토어 상품 번호: {productId || '-'}</div>
+                                        <div className="dedupeItemMetaLine">· 판매자 상품 번호: {productCode || '-'}</div>
+                                        {status ? <div className="dedupeItemMetaLine">· 판매상태: {status}</div> : null}
+                                      </>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                              <button className="dedupeMoveBtn dedupeMoveBtn--back" type="button" onClick={() => unchooseDbRow(g.isbn)} aria-label="선택 해제">
+                                ←
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="dedupeEmpty">오른쪽으로 이동해서 1개 선택</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="dedupeActions">
+                <button className="btn btn--secondary" type="button" onClick={() => setIsDbDedupeOpen(false)}>
+                  취소
+                </button>
+                <button
+                  className="btn btn--primary"
+                  type="button"
+                  onClick={confirmDbDedupeAndSave}
+                  disabled={dbDupGroups.some((g) => !dbChosenByIsbn[g.isbn])}
+                >
+                  저장
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {isInfoOpen ? (
         <div className="modalOverlay" role="presentation" onClick={() => setIsInfoOpen(false)}>
